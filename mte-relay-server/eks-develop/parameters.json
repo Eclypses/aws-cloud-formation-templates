@@ -1,0 +1,42 @@
+[
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": "vpc-0bb11c09c41fc8d3b"
+  },
+  {
+    "ParameterKey": "SubnetIds",
+    "ParameterValue": "subnet-0a75d43abe93603d8,subnet-072f89e9aaa3fc647"
+  },
+  {
+    "ParameterKey": "ContainerImage",
+    "ParameterValue": "321186633847.dkr.ecr.us-east-1.amazonaws.com/mte-relay-server-test"
+  },
+  {
+    "ParameterKey": "Upstream",
+    "ParameterValue": "https://aws-relay-demo.eclypses.com"
+  },
+  {
+    "ParameterKey": "CorsOrigins",
+    "ParameterValue": "https://aws-relay-demo.eclypses.com,http://localhost:3000"
+  },
+  {
+    "ParameterKey": "ClientIdSecret",
+    "ParameterValue": "Zf7wytahHE3d-pSrC2qND!5xgR*Lb4Kv"
+  },
+  {
+    "ParameterKey": "NodeInstanceType",
+    "ParameterValue": "t3.medium"
+  },
+  {
+    "ParameterKey": "NodeAutoScalingGroupMinSize",
+    "ParameterValue": "2"
+  },
+  {
+    "ParameterKey": "NodeAutoScalingGroupMaxSize",
+    "ParameterValue": "4"
+  },
+  {
+    "ParameterKey": "NodeAutoScalingGroupDesiredCapacity",
+    "ParameterValue": "2"
+  }
+]

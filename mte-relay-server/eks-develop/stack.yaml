@@ -1,0 +1,358 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation template for running MTE Relay on EKS with ElastiCache"
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where resources will be deployed
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnets for the EKS cluster and ElastiCache
+
+  ContainerImage:
+    Type: String
+    Default: 709825985650.dkr.ecr.us-east-1.amazonaws.com/eclypses/mte-relay-server:4.6.7
+    Description: Docker image URI
+
+  Upstream:
+    Type: String
+    Description: URL of the upstream server
+
+  CorsOrigins:
+    Type: String
+    Description: Comma-separated list of allowed CORS origins
+
+  ClientIdSecret:
+    Type: String
+    Description: A ClientID Secret
+    Default: ""
+    NoEcho: true
+    AllowedPattern: "^$|^.{32,}$"
+    ConstraintDescription: must be empty (auto-generate) or at least 32 characters
+
+  NodeInstanceType:
+    Type: String
+    Default: t3.medium
+    Description: EC2 instance type for the node instances
+
+  NodeAutoScalingGroupMinSize:
+    Type: Number
+    Default: 2
+    Description: Minimum size of Node Group ASG
+
+  NodeAutoScalingGroupMaxSize:
+    Type: Number
+    Default: 4
+    Description: Maximum size of Node Group ASG
+
+  NodeAutoScalingGroupDesiredCapacity:
+    Type: Number
+    Default: 2
+    Description: Desired capacity of Node Group ASG
+
+Resources:
+  # Security Groups
+  EKSClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:
+        !Join ["", [!Ref AWS::StackName, " Security group for EKS cluster"]]
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-eks-cluster-sg"]]
+
+  EKSNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:
+        !Join [
+          "",
+          [!Ref AWS::StackName, " Security group for EKS worker nodes"],
+        ]
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 0
+          ToPort: 65535
+          SourceSecurityGroupId: !Ref EKSClusterSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 1025
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-eks-node-sg"]]
+        - Key: !Sub "kubernetes.io/cluster/${AWS::StackName}"
+          Value: "owned"
+
+  ElastiCacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:
+        !Join ["", [!Ref AWS::StackName, " Security group for ElastiCache"]]
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref EKSNodeSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-elasticache-sg"]]
+
+  # IAM Roles
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-EKSClusterRole"]]
+
+  EKSNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Policies:
+        - PolicyName: MarketplaceRegisterUsage
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: aws-marketplace:RegisterUsage
+                Resource: "*"
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-EKSNodeRole"]]
+
+  # EKS Cluster
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref AWS::StackName
+      Version: "1.27"
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !Ref EKSClusterSecurityGroup
+        SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-eks-cluster"]]
+
+  # EKS Node Group
+  EKSNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodegroupName: !Join ["", [!Ref AWS::StackName, "-node-group"]]
+      NodeRole: !GetAtt EKSNodeRole.Arn
+      ScalingConfig:
+        MinSize: !Ref NodeAutoScalingGroupMinSize
+        DesiredSize: !Ref NodeAutoScalingGroupDesiredCapacity
+        MaxSize: !Ref NodeAutoScalingGroupMaxSize
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      Subnets: !Ref SubnetIds
+      Tags:
+        Name: !Join ["", [!Ref AWS::StackName, "-eks-node"]]
+
+  # ElastiCache Redis
+  ElastiCacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description:
+        !Join ["", [!Ref AWS::StackName, " Subnet group for ElastiCache"]]
+      SubnetIds: !Ref SubnetIds
+      CacheSubnetGroupName:
+        !Join ["-", [!Ref AWS::StackName, "cache-subnet-group"]]
+
+  ElastiCacheRedis:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupId: !Join ["", [!Ref AWS::StackName, "-redis"]]
+      ReplicationGroupDescription:
+        !Join [
+          "",
+          [!Ref AWS::StackName, " Redis replication group with TLS enabled"],
+        ]
+      Engine: redis
+      CacheNodeType: cache.t3.micro
+      NumCacheClusters: 1
+      AutomaticFailoverEnabled: false
+      TransitEncryptionEnabled: true
+      SecurityGroupIds:
+        - !Ref ElastiCacheSecurityGroup
+      CacheSubnetGroupName: !Ref ElastiCacheSubnetGroup
+
+  # AWS Load Balancer Controller IAM Role and Policy
+  AWSLoadBalancerControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy"
+      Path: /
+      Tags:
+        - Key: Name
+          Value: !Join ["", [!Ref AWS::StackName, "-alb-controller-role"]]
+
+  AWSLoadBalancerControllerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName:
+        !Join ["", [!Ref AWS::StackName, "-AWSLoadBalancerControllerPolicy"]]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "ec2:DescribeAccountAttributes"
+              - "ec2:DescribeAddresses"
+              - "ec2:DescribeInternetGateways"
+              - "ec2:DescribeVpcs"
+              - "ec2:DescribeSubnets"
+              - "ec2:DescribeSecurityGroups"
+              - "ec2:DescribeInstances"
+              - "ec2:DescribeNetworkInterfaces"
+              - "ec2:DescribeTags"
+              - "ec2:GetCoipPoolUsage"
+              - "ec2:DescribeCoipPools"
+              - "elasticloadbalancing:DescribeLoadBalancers"
+              - "elasticloadbalancing:DescribeLoadBalancerAttributes"
+              - "elasticloadbalancing:DescribeListeners"
+              - "elasticloadbalancing:DescribeListenerCertificates"
+              - "elasticloadbalancing:DescribeSSLPolicies"
+              - "elasticloadbalancing:DescribeRules"
+              - "elasticloadbalancing:DescribeTargetGroups"
+              - "elasticloadbalancing:DescribeTargetGroupAttributes"
+              - "elasticloadbalancing:DescribeTargetHealth"
+              - "elasticloadbalancing:DescribeTags"
+              - "cognito-idp:DescribeUserPoolClient"
+              - "acm:ListCertificates"
+              - "acm:DescribeCertificate"
+              - "iam:ListServerCertificates"
+              - "iam:GetServerCertificate"
+              - "waf-regional:GetWebACL"
+              - "waf-regional:GetWebACLForResource"
+              - "waf-regional:AssociateWebACL"
+              - "waf-regional:DisassociateWebACL"
+              - "wafv2:GetWebACL"
+              - "wafv2:GetWebACLForResource"
+              - "wafv2:AssociateWebACL"
+              - "wafv2:DisassociateWebACL"
+              - "shield:GetSubscriptionState"
+              - "shield:DescribeProtection"
+              - "shield:CreateProtection"
+              - "shield:DeleteProtection"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:RevokeSecurityGroupIngress"
+              - "ec2:CreateSecurityGroup"
+              - "ec2:CreateTags"
+              - "ec2:DeleteTags"
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:RevokeSecurityGroupIngress"
+              - "ec2:DeleteSecurityGroup"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - "elasticloadbalancing:CreateLoadBalancer"
+              - "elasticloadbalancing:CreateTargetGroup"
+              - "elasticloadbalancing:CreateListener"
+              - "elasticloadbalancing:DeleteListener"
+              - "elasticloadbalancing:CreateRule"
+              - "elasticloadbalancing:DeleteRule"
+              - "elasticloadbalancing:AddTags"
+              - "elasticloadbalancing:RemoveTags"
+              - "elasticloadbalancing:ModifyLoadBalancerAttributes"
+              - "elasticloadbalancing:SetIpAddressType"
+              - "elasticloadbalancing:SetSecurityGroups"
+              - "elasticloadbalancing:SetSubnets"
+              - "elasticloadbalancing:DeleteLoadBalancer"
+              - "elasticloadbalancing:ModifyTargetGroup"
+              - "elasticloadbalancing:ModifyTargetGroupAttributes"
+              - "elasticloadbalancing:DeleteTargetGroup"
+              - "elasticloadbalancing:RegisterTargets"
+              - "elasticloadbalancing:DeregisterTargets"
+              - "elasticloadbalancing:SetWebAcl"
+              - "elasticloadbalancing:ModifyListener"
+              - "elasticloadbalancing:AddListenerCertificates"
+              - "elasticloadbalancing:RemoveListenerCertificates"
+              - "elasticloadbalancing:ModifyRule"
+            Resource: "*"
+      Roles:
+        - !Ref EKSNodeRole
+
+  # CloudWatch Logs Group
+  CloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ["", ["/aws/eks/", !Ref AWS::StackName, "/cluster"]]
+      RetentionInDays: 14
+
+Outputs:
+  EKSClusterName:
+    Description: Name of the EKS cluster
+    Value: !Ref AWS::StackName
+
+  EKSClusterEndpoint:
+    Description: Endpoint for the EKS cluster
+    Value: !GetAtt EKSCluster.Endpoint
+
+  EKSClusterArn:
+    Description: ARN of the EKS cluster
+    Value: !GetAtt EKSCluster.Arn
+
+  ElastiCacheEndpoint:
+    Description: Endpoint of the ElastiCache Redis instance
+    Value: !GetAtt ElastiCacheRedis.PrimaryEndPoint.Address
+
+  ElastiCachePort:
+    Description: Port of the ElastiCache Redis instance
+    Value: !GetAtt ElastiCacheRedis.PrimaryEndPoint.Port
+
+  KubernetesDeploymentInstructions:
+    Description: Instructions for deploying the application to Kubernetes
+    Value: !Sub |
+      1. Configure kubectl: aws eks update-kubeconfig --name ${EKSCluster} --region ${AWS::Region}
+      2. Install AWS Load Balancer Controller using Helm
+      3. Apply the Kubernetes manifests for your application

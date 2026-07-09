@@ -1,0 +1,26 @@
+[
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "SubnetIds",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "Upstream",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "ClientIdSecret",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "OutboundToken",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "DomainMap",
+    "ParameterValue": ""
+  }
+]

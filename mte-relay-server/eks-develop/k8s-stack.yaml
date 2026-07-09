@@ -1,0 +1,102 @@
+# mte-relay-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mte-relay-config
+data:
+  UPSTREAM: "${Upstream}"
+  LOG_LEVEL: "debug"
+  CORS_ORIGINS: "${CorsOrigins}"
+  AWS_REGION: "${AWS::Region}"
+  REDIS_URL: "rediss://${ElastiCacheRedis.PrimaryEndPoint.Address}:${ElastiCacheRedis.PrimaryEndPoint.Port}"
+---
+# mte-relay-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mte-relay-secrets
+type: Opaque
+stringData:
+  CLIENT_ID_SECRET: "${ClientIdSecret}"
+---
+# mte-relay-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mte-relay
+  labels:
+    app: mte-relay
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mte-relay
+  template:
+    metadata:
+      labels:
+        app: mte-relay
+    spec:
+      containers:
+        - name: mte-relay
+          image: ${ContainerImage}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: mte-relay-config
+            - secretRef:
+                name: mte-relay-secrets
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /api/mte-echo
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /api/mte-echo
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+# mte-relay-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mte-relay
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: mte-relay
+---
+# mte-relay-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mte-relay-ingress
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mte-relay
+                port:
+                  number: 80
